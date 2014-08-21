@@ -7,7 +7,17 @@
 //
 
 #import <UIKit/UIKit.h>
+#import "BLE.h"
 
-@interface ViewController : UIViewController
+@interface ViewController : UIViewController <BLEDelegate>
+{
+    int speedValue;
+    
+    BLE *bleShield;
+    UIActivityIndicatorView *activityIndicator;
+}
+
+@property (weak, nonatomic) IBOutlet UISlider *speedControl;
+@property (weak, nonatomic) IBOutlet UILabel *speedLabel;
 
 @end
