@@ -1,1 +1,1 @@
-pod 'PebbleKit'
+pod 'BLEFramework', :path => '~/Downloads/BLEFramework' 
