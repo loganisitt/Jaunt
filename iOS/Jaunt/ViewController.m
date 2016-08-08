@@ -7,23 +7,45 @@
 
 #import "WMGaugeView.h"
 
-#define RGBA(r,g,b,a) [UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:a/255.0]
+#define BREAK_SPEED 95
+#define MIN_SPEED 100
+#define MAX_SPEED 179
 
-#define NEUTRAL_SPEED 95.0
+@implementation NSObject (Blocks)
+
+- (void)performBlock:(void (^)())block
+{
+    block();
+}
+
+- (void)performBlock:(void (^)())block afterDelay:(NSTimeInterval)delay
+{
+    void (^block_)() = [block copy]; // autorelease this if you're not using ARC
+    [self performSelector:@selector(performBlock:) withObject:block_ afterDelay:delay];
+}
+
+@end
 
 @interface ViewController () {
+    BOOL _tracking;
     CGPoint firstPoint;
 }
 
 @property (strong, nonatomic) IBOutlet WMGaugeView *gaugeView;
 @property (strong, nonatomic) IBOutlet UILabel *gaugeLabel;
 
+@property (weak, nonatomic) IBOutlet UIButton *breakButton;
+@property (weak, nonatomic) IBOutlet UILabel *averageSpeedLabel;
+@property (weak, nonatomic) IBOutlet UILabel *topSpeedLabel;
 @end
 
 @implementation ViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+
+    self.follower = [Follower new];
+    self.follower.delegate = self;
 
     self.navigationController.navigationBar.barTintColor = [UIColor colorWithRed:255.0/255.0 green:104.0/255.0 blue:97.0/255.0 alpha:255.0/255.0];
 
@@ -44,16 +66,59 @@
     bleShield = [[BLE alloc] init];
     [bleShield controlSetup];
     bleShield.delegate = self;
-    
+
+    [self.breakButton setTitle:@"Break" forState:UIControlStateNormal];
+    [self.breakButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self.breakButton.backgroundColor = [UIColor redColor];
+    self.breakButton.layer.cornerRadius = 50.0;
+
+    [self.breakButton addTarget:self
+                         action:@selector(softBreak)
+               forControlEvents:UIControlEventTouchUpInside];
+
     self.navigationItem.hidesBackButton = NO;
     
     activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     UIBarButtonItem *barButton = [[UIBarButtonItem alloc] initWithCustomView:activityIndicator];
     [self navigationItem].rightBarButtonItem = barButton;
-    
-    speedValue = 95;
 
-    [self.view addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragging:)]];
+    UIBarButtonItem *connectButton = [[UIBarButtonItem alloc] initWithTitle:@"Connect" style:UIBarButtonItemStyleDone target:self action:@selector(BLEShieldScan:)];
+
+    connectButton.tintColor = [UIColor whiteColor];
+
+    self.navigationItem.leftBarButtonItem = connectButton;
+    
+    speedValue = BREAK_SPEED;
+
+    [self.view addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                            action:@selector(dragging:)]];
+}
+
+- (void)softBreak {
+
+    float softBreakDelay = 2.0 / (speedValue - 100);
+    if (softBreakDelay >= 2.0) {
+        [self updateSpeed:@(MIN_SPEED)];
+        [self hardBreak];
+    } else {
+        [self performBlock:^{
+            [self updateSpeed:@(--speedValue)];
+            [self softBreak];
+        } afterDelay:softBreakDelay];
+    }
+}
+
+- (void)hardBreak {
+
+    speedValue = BREAK_SPEED;
+
+    NSString *s = [NSString stringWithFormat:@"%i", speedValue];
+    NSData *d = [s dataUsingEncoding:NSUTF8StringEncoding];
+
+    if (bleShield.activePeripheral.state == CBPeripheralStateConnected) {
+        [bleShield write:d];
+    }
+
 }
 
 -(void)dragging:(UIPanGestureRecognizer *)gesture {
@@ -70,32 +135,17 @@
 
     float percentage = dY / height;
 
-    [self updateSpeed:(1 + percentage) * speedValue];
+    [self updateSpeed:@((1 + percentage) * speedValue)];
 
     if (gesture.state == UIGestureRecognizerStateEnded) {
         speedValue = MAX(100, MIN((1 + percentage) * speedValue, 179));
     }
 }
 
--(void)gaugeUpdateTimer:(NSTimer *)timer {
-
-    __weak ViewController *weakSelf = self;
-    [_gaugeView setValue:rand()%(int)_gaugeView.maxValue
-                animated:YES
-                duration:1.6
-              completion:^(BOOL finished) {
-                  weakSelf.gaugeLabel.text = [NSString stringWithFormat:@"%.0f JPS", weakSelf.gaugeView.value];
-              }];
-}
-
--(void) connectionTimer:(NSTimer *)timer
-{
-    if(bleShield.peripherals.count > 0)
-    {
+-(void) connectionTimer:(NSTimer *)timer {
+    if(bleShield.peripherals.count > 0) {
         [bleShield connectPeripheral:[bleShield.peripherals objectAtIndex:0]];
-    }
-    else
-    {
+    } else {
         [activityIndicator stopAnimating];
         self.navigationItem.leftBarButtonItem.enabled = YES;
     }
@@ -121,47 +171,9 @@
     self.navigationItem.leftBarButtonItem.enabled = NO;
 }
 
--(void) bleDidReceiveData:(unsigned char *)data length:(int)length {
-    NSData *d = [NSData dataWithBytes:data length:length];
-    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
-    NSLog(@"%@", s);
-}
+- (void)updateSpeed:(NSNumber *)speed {
 
-NSTimer *rssiTimer;
-
--(void) readRSSITimer:(NSTimer *)timer
-{
-    [bleShield readRSSI];
-    NSLog(@"%s", __PRETTY_FUNCTION__);
-}
-
-- (void) bleDidDisconnect {
-
-    // TODO: Add alert
-
-    [self.navigationItem.leftBarButtonItem setTitle:@"Connect"];
-    [activityIndicator stopAnimating];
-    self.navigationItem.leftBarButtonItem.enabled = YES;
-    
-    [[UIApplication sharedApplication] sendAction:@selector(resignFirstResponder) to:nil from:nil forEvent:nil];
-
-    speedValue = NEUTRAL_SPEED;
-}
-
--(void) bleDidConnect
-{
-    [activityIndicator stopAnimating];
-    self.navigationItem.leftBarButtonItem.enabled = YES;
-    [self.navigationItem.leftBarButtonItem setTitle:@"Disconnect"];
-
-    [self updateSpeed:speedValue];
-    
-    NSLog(@"bleDidConnect");
-}
-
-- (void)updateSpeed:(int)speed {
-
-    int actualSpeed = MAX(100, MIN(speed, 179));
+    int actualSpeed = MAX(MIN_SPEED, MIN(speed.intValue, MAX_SPEED));
 
     NSString *s = [NSString stringWithFormat:@"%i", actualSpeed];
     NSData *d = [s dataUsingEncoding:NSUTF8StringEncoding];
@@ -171,14 +183,57 @@ NSTimer *rssiTimer;
     }
 
     __weak ViewController *weakSelf = self;
-    [_gaugeView setValue:actualSpeed % 100
+    [_gaugeView setValue:actualSpeed % MIN_SPEED
                 animated:YES
                 duration:0
               completion:^(BOOL finished) {
-                  weakSelf.gaugeLabel.text = [NSString stringWithFormat:@"%.0f JPS", weakSelf.gaugeView.value];
+                  weakSelf.gaugeLabel.text = [NSString stringWithFormat:@"%.0fjps", weakSelf.gaugeView.value];
               }];
+}
 
-    NSLog(@"Speed Value: %d", actualSpeed);
+#pragma mark - BLEDelegate
+
+-(void) bleDidReceiveData:(unsigned char *)data length:(int)length {
+    // TODO: Add Alert
+
+//    NSData *d = [NSData dataWithBytes:data length:length];
+//    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+}
+
+NSTimer *rssiTimer;
+
+-(void) readRSSITimer:(NSTimer *)timer {
+    [bleShield readRSSI];
+}
+
+- (void) bleDidDisconnect {
+
+    // TODO: Add alert
+    [self.follower endRouteTracking];
+    [self.navigationItem.leftBarButtonItem setTitle:@"Connect"];
+    [activityIndicator stopAnimating];
+    self.navigationItem.leftBarButtonItem.enabled = YES;
+
+    [[UIApplication sharedApplication] sendAction:@selector(resignFirstResponder) to:nil from:nil forEvent:nil];
+}
+
+-(void) bleDidConnect {
+    // TODO: Add Alert
+
+    [self.follower beginRouteTracking];
+    [activityIndicator stopAnimating];
+    self.navigationItem.leftBarButtonItem.enabled = YES;
+    [self.navigationItem.leftBarButtonItem setTitle:@"Disconnect"];
+
+    [self updateSpeed:@(speedValue)];
+}
+
+#pragma mark - Follower
+
+- (void)followerDidUpdate:(Follower *)follower {
+
+    self.topSpeedLabel.text = [NSString stringWithFormat:@"%.1f mph", [follower topSpeedWithUnit:SpeedUnitMilesPerHour]];
+    self.averageSpeedLabel.text = [NSString stringWithFormat:@"%.1f mph", [follower averageSpeedWithUnit:SpeedUnitMilesPerHour]];
 }
 
 @end
